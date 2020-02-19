@@ -9,14 +9,14 @@
 # Copyright : (c) UC Regents, Emre Neftci
 # Licence : GPLv2
 #----------------------------------------------------------------------------- 
-from decolle.lenet_decolle_model import LenetDECOLLE
+from decolle.decolle import DECOLLE
 from decolle.utils import parse_args, train, test, accuracy, save_checkpoint, load_model_from_checkpoint, prepare_experiment, write_stats
 import datetime, os, socket, tqdm
 import numpy as np
 import torch
 import importlib
-args = parse_args('parameters/params.yml')
-device = args.device
+args = parse_args('parameters/params_dvsgesture.yml')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 starting_epoch = 0
@@ -44,7 +44,7 @@ target_batch = torch.Tensor(target_batch).to(device)
 input_shape = data_batch.shape[-3:]
 
 ## Create Model, Optimizer and Loss
-net = LenetDECOLLE( out_channels=params['out_channels'],
+net = DECOLLE( out_channels=params['out_channels'],
                     Nhid=params['Nhid'],
                     Mhid=params['Mhid'],
                     kernel_size=params['kernel_size'],

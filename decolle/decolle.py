@@ -43,64 +43,6 @@ class SmoothStep(torch.autograd.Function):
 smooth_step = SmoothStep().apply
 sigmoid = nn.Sigmoid()
 
-
-class LinearFAFunction(torch.autograd.Function):
-    '''from https://github.com/L0SG/feedback-alignment-pytorch/'''
-    @staticmethod
-    # same as reference linear function, but with additional fa tensor for backward
-    def forward(context, input, weight, weight_fa, bias=None):
-        context.save_for_backward(input, weight, weight_fa, bias)
-        output = input.mm(weight.t())
-        if bias is not None:
-            output += bias.unsqueeze(0).expand_as(output)
-        return output
-
-    @staticmethod
-    def backward(context, grad_output):
-        input, weight, weight_fa, bias = context.saved_tensors
-        grad_input = grad_weight = grad_weight_fa = grad_bias = None
-
-        if context.needs_input_grad[0]:
-            # all of the logic of FA resides in this one line
-            # calculate the gradient of input with fixed fa tensor, rather than the "correct" model weight
-            grad_input = grad_output.mm(weight_fa)
-        if context.needs_input_grad[1]:
-            # grad for weight with FA'ed grad_output from downstream layer
-            # it is same with original linear function
-            grad_weight = grad_output.t().mm(input)
-        if bias is not None and context.needs_input_grad[3]:
-            grad_bias = grad_output.sum(0).squeeze(0)
-
-        return grad_input, grad_weight, grad_weight_fa, grad_bias
-
-
-class FALinear(nn.Module):
-    '''from https://github.com/L0SG/feedback-alignment-pytorch/'''
-    def __init__(self, input_features, output_features, bias=True):
-        super(FALinear, self).__init__()
-        self.input_features = input_features
-        self.output_features = output_features
-
-        # weight and bias for forward pass
-        # weight has transposed form; more efficient (so i heard) (transposed at forward pass)
-        self.weight = nn.Parameter(torch.Tensor(output_features, input_features))
-        if bias:
-            self.bias = nn.Parameter(torch.Tensor(output_features))
-        else:
-            self.register_parameter('bias', None)
-
-        # fixed random weight and bias for FA backward pass
-        # does not need gradient
-        self.weight_fa = torch.nn.Parameter(torch.FloatTensor(output_features, input_features), requires_grad=False)
-
-        # weight initialization
-        #torch.nn.init.kaiming_uniform(self.weight)
-        #torch.nn.init.kaiming_uniform(self.weight_fa)
-        #torch.nn.init.constant(self.bias, 1)
-
-    def forward(self, input):
-        return LinearFAFunction.apply(input, self.weight, self.weight_fa, self.bias)
-
 class LIFLayer(nn.Module):
     NeuronState = namedtuple('NeuronState', ['P', 'Q', 'R', 'S'])
 
@@ -222,51 +164,10 @@ class LIFLayer(nn.Module):
     
     def get_device(self):
         return self.base_layer.weight.device
-    
-class LIFLayerVariableTau(LIFLayer):
-    def __init__(self, layer, alpha=.9, alpharp=.65, wrp=1.0, beta=.85, deltat=1000, random_tau=True):
-        super(LIFLayerVariableTau, self).__init__(layer, alpha, alpharp, wrp, beta, deltat)
-        self.random_tau = random_tau
-        self.alpha_mean = np.array(self.alpha)
-        self.beta_mean = np.array(self.beta)
-        
-    def randomize_tau(self, im_size, tau, std__mean = .25):
-        '''
-        Returns a random (normally distributed) temporal constant of size im_size computed as
-        `1 / Dt*tau where Dt is the temporal window, and tau is a random value expressed in microseconds
-        between low and high.
-        :param im_size: input shape
-        :param mean__std: mean to standard deviation
-        :return: 1/Dt*tau
-        '''
-        tau = np.random.normal(1, std__mean, size=im_size)*tau
-        tau[tau<5]=5
-        tau[tau>=200]=200
-        #tau = np.broadcast_to(tau, (im_size[0], im_size[1], channels)).transpose(2, 0, 1)
-        return torch.Tensor(1 - 1. / tau)
-    
-    def init_parameters(self, Sin_t):
-        device = self.get_device()
-        input_shape = list(Sin_t.shape)
-        tau_m = 1./(1-self.alpha_mean)
-        tau_s = 1./(1-self.beta_mean)
-        if self.random_tau:
-            self.alpha = torch.nn.Parameter(self.randomize_tau(input_shape[1:], tau_m).to(device), requires_grad = True)
-            self.beta  = torch.nn.Parameter(self.randomize_tau(input_shape[1:], tau_s).to(device), requires_grad = True)
-        else:
-            self.alpha = torch.nn.Parameter(torch.ones([input_shape[1:]]).to(device)*self.alpha_mean, requires_grad = True)
-            self.beta  = torch.nn.Parameter(torch.ones([input_shape[1:]]).to(device)*self.beta_mean, requires_grad = True)
-        self.tau_m = torch.nn.Parameter(1. / (1 - self.alpha), requires_grad = False)
-        self.tau_s = torch.nn.Parameter(1. / (1 - self.beta), requires_grad = False)
 
-class DECOLLEBase(nn.Module):
+
+class DECOLLE(nn.Module):
     requires_init = True
-    def __init__(self):
-
-        super(DECOLLEBase, self).__init__()
-
-        self.LIF_layers = nn.ModuleList()
-        self.readout_layers = nn.ModuleList()
 
     def __len__(self):
         return len(self.LIF_layers)
@@ -315,9 +216,135 @@ class DECOLLEBase(nn.Module):
             return list(self.LIF_layers[0].parameters())[0].device
 
     def get_output_layer_device(self):
-        return self.output_layer.weight.device 
+        return self.output_layer.weight.device
 
 
+    def __init__(self,
+                 input_shape,
+                 Nhid=[1],
+                 Mhid=[128],
+                 out_channels=1,
+                 kernel_size=[7],
+                 stride=[1],
+                 pool_size=[2],
+                 alpha=[.9],
+                 beta=[.85],
+                 alpharp=[.65],
+                 dropout=[0.5],
+                 num_conv_layers=2,
+                 num_mlp_layers=1,
+                 deltat=1000,
+                 lc_ampl=.5,
+                 lif_layer_type=LIFLayer):
+
+        num_layers = num_conv_layers + num_mlp_layers
+        # If only one value provided, then it is duplicated for each layer
+        if len(kernel_size) == 1:   kernel_size = kernel_size * num_conv_layers
+        if len(stride) == 1:        stride = stride * num_conv_layers
+        if len(pool_size) == 1:     pool_size = pool_size * num_conv_layers
+        if len(alpha) == 1:         alpha = alpha * num_layers
+        if len(alpharp) == 1:       alpharp = alpharp * num_layers
+        if len(beta) == 1:          beta = beta * num_layers
+        if len(dropout) == 1:       self.dropout = dropout = dropout * num_layers
+        if len(Nhid) == 1:          self.Nhid = Nhid = Nhid * num_conv_layers
+        if len(Mhid) == 1:          self.Mhid = Mhid = Mhid * num_mlp_layers
+
+        super(DECOLLE, self).__init__()
+
+        self.LIF_layers = nn.ModuleList()
+        self.readout_layers = nn.ModuleList()
+
+        # Computing padding to preserve feature size
+        padding = (np.array(kernel_size) - 1) // 2  # TODO try to remove padding
+
+        feature_height = input_shape[1]
+        feature_width = input_shape[2]
+
+        # THe following lists need to be nn.ModuleList in order for pytorch to properly load and save the state_dict
+        self.pool_layers = nn.ModuleList()
+        self.dropout_layers = nn.ModuleList()
+        self.input_shape = input_shape
+        Nhid = [input_shape[0]] + Nhid
+        self.num_conv_layers = num_conv_layers
+        self.num_mlp_layers = num_mlp_layers
+
+        for i in range(num_conv_layers):
+            feature_height, feature_width = get_output_shape(
+                [feature_height, feature_width],
+                kernel_size=kernel_size[i],
+                stride=stride[i],
+                padding=padding[i],
+                dilation=1)
+            feature_height //= pool_size[i]
+            feature_width //= pool_size[i]
+            base_layer = nn.Conv2d(Nhid[i], Nhid[i + 1], kernel_size[i], stride[i], padding[i])
+            layer = lif_layer_type(base_layer,
+                                   alpha=alpha[i],
+                                   beta=beta[i],
+                                   alpharp=alpharp[i],
+                                   deltat=deltat)
+            pool = nn.MaxPool2d(kernel_size=pool_size[i])
+            readout = nn.Linear(int(feature_height * feature_width * Nhid[i + 1]), out_channels)
+
+            # Readout layer has random fixed weights
+            for param in readout.parameters():
+                param.requires_grad = False
+            self.reset_lc_parameters(readout, lc_ampl)
+
+            dropout_layer = nn.Dropout(dropout[i])
+
+            self.LIF_layers.append(layer)
+            self.pool_layers.append(pool)
+            self.readout_layers.append(readout)
+            self.dropout_layers.append(dropout_layer)
+
+        mlp_in = int(feature_height * feature_width * Nhid[-1])
+        Mhid = [mlp_in] + Mhid
+        for i in range(num_mlp_layers):
+            base_layer = nn.Linear(Mhid[i], Mhid[i + 1])
+            layer = lif_layer_type(base_layer,
+                                   alpha=alpha[i],
+                                   beta=beta[i],
+                                   alpharp=alpharp[i],
+                                   deltat=deltat)
+            readout = nn.Linear(Mhid[i + 1], out_channels)
+
+            # Readout layer has random fixed weights
+            for param in readout.parameters():
+                param.requires_grad = False
+            self.reset_lc_parameters(readout, lc_ampl)
+
+            dropout_layer = nn.Dropout(dropout[self.num_conv_layers + i])
+
+            self.LIF_layers.append(layer)
+            self.pool_layers.append(nn.Sequential())
+            self.readout_layers.append(readout)
+            self.dropout_layers.append(dropout_layer)
+
+    def forward(self, input):
+        s_out = []
+        r_out = []
+        u_out = []
+        i = 0
+        for lif, pool, ro, do in zip(self.LIF_layers, self.pool_layers, self.readout_layers, self.dropout_layers):
+            if i == self.num_conv_layers:
+                input = input.view(input.size(0), -1)
+            s, u = lif(input)
+            u_p = pool(u)
+            s_ = smooth_step(u_p)
+            sd_ = do(s_)
+            r_ = ro(sd_.reshape(sd_.size(0), -1))
+            s_out.append(s_)
+            r_out.append(r_)
+            u_out.append(u_p)
+            input = s_.detach()
+            i += 1
+
+        return s_out, r_out, u_out
 
 
-
+if __name__ == "__main__":
+    # Test building network
+    net = DECOLLE(Nhid=[1, 8], Mhid=[32, 64], out_channels=10, input_shape=[1, 28, 28])
+    d = torch.zeros([1, 1, 28, 28])
+    net(d)

@@ -90,7 +90,8 @@ def load_model_from_checkpoint(checkpoint_dir, net, opt, device='cuda'):
         last_checkpoint = checkpoint_list[-1]
         checkpoint = torch.load(os.path.join(checkpoint_dir, last_checkpoint), map_location=device)
         net.load_state_dict(checkpoint['model_state_dict'])
-        opt.load_state_dict(checkpoint['optimizer_state_dict'])
+        if opt is not None:
+            opt.load_state_dict(checkpoint['optimizer_state_dict'])
         starting_epoch = checkpoint['epoch']
         print('Resuming from epoch {}'.format(starting_epoch))
     return starting_epoch
