@@ -3,7 +3,10 @@ import yaml
 import os
 from decolle.decolle import DECOLLE
 import torch
-from torchneuromorphic.dvs_gestures.dvsgestures_dataloaders import DVSGestureDataset
+import numpy as np
+from decolle.utils import accuracy
+from torchneuromorphic.dvs_gestures.dvsgestures_dataloaders import create_dataloader
+
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -30,8 +33,15 @@ net = DECOLLE( out_channels=params['out_channels'],
 load_model_from_checkpoint(checkpoint_dir, net, None, device)
 net.eval()
 
-d = torch.zeros([1] + params['input_shape'])
+_, data_loader = create_dataloader(batch_size=1)
 
+loss = torch.nn.SmoothL1Loss()
 
-net(d)
-
+# test(data_loader, loss, net, 50)
+for data, target in data_loader:
+    predictions = []
+    for i in range(data.shape[1]):
+        spikes, readouts, mem_potentials = net(data[:, i, ...])
+        predictions.append(np.array([torch.sigmoid(r).detach().numpy() for r in readouts]))
+    acc = accuracy(np.swapaxes(predictions, 0, 1), target.detach().numpy())
+    print(acc)
