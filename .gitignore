@@ -38,6 +38,8 @@ Results*
 decolle/runs*
 samples/data*
 decolle/data
+scripts/data
+.idea/
 __gen__*
 
 # PyInstaller
