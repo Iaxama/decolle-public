@@ -44,6 +44,6 @@ random_tau: false
 reg_l:
 - .0
 - .0
-- .5
+- .0
 - .5
 test_interval: 1
