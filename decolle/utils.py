@@ -117,7 +117,7 @@ def train(gen_train, loss, net, opt, epoch, burnin, reg_l=None):
     total_loss = [0 for i in range(len(net))]
     act_rate = [0 for i in range(len(net))]
     
-    for data_batch, target_batch in iter_gen_train:
+    for data_batch, target_batch in tqdm(iter_gen_train, desc='Training epoch {}'.format(epoch)):
         data_batch = torch.Tensor(data_batch).to(device)
         target_batch = torch.Tensor(target_batch).to(device)
         if len(target_batch.shape) == 2:
@@ -130,7 +130,7 @@ def train(gen_train, loss, net, opt, epoch, burnin, reg_l=None):
         loss_mask = (target_batch.sum(2)>0).unsqueeze(2).float()
         net.init(data_batch, burnin)
         t_sample = data_batch.shape[1]
-        for k in tqdm(range(t_sample), desc='Epoch {}'.format(epoch)):
+        for k in range(t_sample):
             s, r, u = net.forward(data_batch[:, k, :, :])
             loss_tv = decolle_loss(s, r, u, loss_fn = loss, net = net, reg_l = reg_l, target=target_batch[:,k,:], loss_mask = loss_mask[:,k,:])
             loss_tv.backward()
@@ -151,7 +151,7 @@ def test(gen_test, loss, net, burnin, print_error=True):
         test_acc = np.zeros([len(net)])
         test_loss = np.zeros([len(net)])
 
-        for data_batch, target_batch in iter_data_labels:
+        for data_batch, target_batch in tqdm(iter_data_labels, desc='Testing'):
             data_batch = torch.Tensor(data_batch).to(device)
             target_batch = torch.Tensor(target_batch).to(device)
 
@@ -170,8 +170,7 @@ def test(gen_test, loss, net, burnin, print_error=True):
             target_mask = tonp(target_batch.sum(2, keepdim=True)>0)
             net.init(data_batch, burnin)
 
-            print('--------------Testing---------------')
-            for k in tqdm(range(timesteps), desc='Testing'):
+            for k in range(timesteps):
                 s, r, u = net.forward(data_batch[:, k, :, :])
                 test_loss_tv = decolle_loss(s,r,u, target=target_batch[:,k], loss_fn=loss, net=net, sum_ = False)
                 test_loss += [tonp(x) for x in test_loss_tv]

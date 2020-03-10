@@ -98,7 +98,7 @@ for e in range(starting_epoch , params['num_epochs'] ):
         print('Changing learning rate from {} to {}'.format(lr, opt.param_groups[-1]['lr']))
         opt.param_groups[-1]['lr'] = np.array(params['learning_rate'])
 
-    if (e % params['test_interval']) == 0 and e!=0:
+    if (e % params['test_interval']) == 0 or e==0:
         print('---------------Epoch {}-------------'.format(e))
         if not args.no_save:
             print('---------Saving checkpoint---------')
