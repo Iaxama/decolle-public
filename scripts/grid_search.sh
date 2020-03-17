@@ -27,6 +27,17 @@ done
 
 mem_min=${mem_min-5000}
 
+if [[ ! -v script ]]; then
+  echo "Error: You must define a script to run. Run with --help for usage."
+  exit 0
+fi
+
+
+if [[ ! -v save_dir ]]; then
+  echo "Error: You must define a save directory to store results. Run with --help for usage."
+  exit 0
+fi
+
 if [[ -v help ]]; then
     echo "Script to run several simulations with a set of parameters taken from different files."
     echo "The script verifies the presence of GPUs in the system and subsequently runs the required"
