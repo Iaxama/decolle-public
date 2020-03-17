@@ -2,22 +2,29 @@
 
 declare -a params=(mem_min script save_dir no_use_gpus help)
 
+read_s_args()
+{
+    while (($#)) && [[ $1 != -* ]];  do sargs+=("$1"); shift; done
+}
+
 while [ $# -gt 0 ]; do
 
    if [[ $1 == *"--"* ]]; then
         param="${1/--/}"
         if [[ ${params[*]} =~ $param ]]; then
-          declare $param="$2"
+          read_s_args "${@:2}"
+          declare -a "$param"="(${sargs[*]})"
         fi
-
         if [[ ! ${params[*]} =~ $param ]]; then
             echo "Unknown argument $param "
+            exit 1
         fi
 
    fi
 
   shift
 done
+
 mem_min=${mem_min-5000}
 
 if [[ -v help ]]; then
@@ -37,12 +44,6 @@ if [[ -v help ]]; then
     exit 0
 fi
 
-#if [[ -v no_use_gpus ]]; then
-#  declare -a no_use_gpus=("$no_use_gpus")
-#fi
-
-echo "$mem_min" "$script" "$save_dir" "$no_use_gpus" "$help"
-
 #Kill all child processes on exit or ctrl-c
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 
@@ -54,7 +55,17 @@ else
 fi
 echo "Found ${NUM_GPUS} GPUs."
 
-NUM_PROCS=0
+if [ -v no_use_gpus ]; then
+  for i in "${!no_use_gpus[@]}"; do
+    if [[ "${no_use_gpus[i]}" -ge "$NUM_GPUS" ]]; then
+      echo ${no_use_gpus[i]}
+      unset 'no_use_gpus[i]'
+    fi
+  done
+  if [ "${#no_use_gpus[@]}" == $NUM_GPUS ] ; then
+    NUM_GPUS=0
+  fi
+fi
 
 for filename in params_to_test/*; do
     if [ "${NUM_GPUS}" -gt "0" ] ;then
